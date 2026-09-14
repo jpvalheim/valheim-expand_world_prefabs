@@ -266,16 +266,20 @@ See object filtering [examples](examples_object_filtering.md).
   - Using `say` command requires either Discord Control mod or Server Devcommands mod (with Server chat enabled).
 - commands: List of console commands to run.
 - log: Text appended as a new record in `BepInEx/config/expand_world/ewp_log.txt`.
+  - Accepts either one scalar string or a YAML sequence of strings. Each sequence item is a separate record.
+  - No text separator is reserved; characters such as `;;` remain literal content.
   - Functions and object substitutions are supported.
   - Logging is server-authoritative and occurs after rule selection and chance checks, before other configured actions.
   - Logging records that the rule reached its action phase; it does not prove that later actions succeeded.
-  - The file is never read, rewritten, sorted, or truncated by EWP.
+  - Rolling mode archives completed active files as timestamped `ewp_log.*.txt`
+    segments and deletes the oldest segments within the configured bounds.
   - The `Rule logging` configuration setting can disable all `log` actions without changing scripts.
   - One background worker buffers writes and flushes about every second or at 64 KiB; it never performs file I/O on the rule's caller.
   - Rate, memory and record-size limits protect gameplay. Rejected records are counted in throttled gap summaries.
-  - An I/O failure disables logging until restart; a throwing formatter disables that rule's log action until YAML reload.
-  - EWP does not rotate or limit this file. Server operators are responsible for retention and disk usage.
-  - See [append-only rule logging](logging.md) for examples and operational notes.
+  - An I/O failure disables logging until restart; a throwing formatter disables only that log template until YAML reload.
+  - `StopAtLimit` preserves the former behavior where the active file stops
+    accepting records at `Maximum file MiB`.
+  - See [rule logging](logging.md) for examples and operational notes.
 - data: Sets object data either with format `name` or `type, key, value`.
   - Format `name` can be used to set multiple values (entry name from `data.yaml`).
   - Format `type, key, value` is a shorthand to set a single data value.
@@ -442,11 +446,22 @@ RPC format:
 
 - terrain: List of terrain operations.
   - Missing _TerrainCompiler objects are automatically created when needed.
-  - Doesn't apply to zones that are not already generated.
+  - Generated zones without loaded terrain scene objects are updated through
+    their serialized terrain-compiler data.
+  - Operations retry affected zones that are not ready, up to 12 attempts at one-second intervals.
 
 Terrain operation:
 
 - delay (default: `0`): Delay in seconds for the terrain change.
+- onSuccess: Poke arguments sent to the original source object after every
+  affected zone completes the server-side operation.
+- onFailure: Poke arguments sent to the original source object when the bounded
+  operation fails.
+  - Both callback fields use the same comma-separated, split-before-substitution
+    format as `poke.pars`.
+  - Arguments are resolved when the terrain request starts. The source object
+    must still exist when the callback runs.
+  - Completion confirms the server operation, not client rendering.
 - pos (or `position`): Position offset in x,z,y from the original object. Default is no offset.
 - resetRadius (default: `0`): Radius for the terrain and paint reset.
   - This is purely done server side, so you can't use other operations with this.

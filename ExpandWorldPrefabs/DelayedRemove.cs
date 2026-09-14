@@ -21,15 +21,14 @@ public class DelayedRemove(double due, ZDOID zdo, bool triggerRules)
     {
       var remove = Removes[i];
       if (remove.Due > ZNet.instance.m_netTime) continue;
-      remove.ExecuteAction();
       Removes.RemoveAt(i);
       i--;
+      remove.ExecuteAction();
     }
   }
   private readonly ZDOID Zdo = zdo;
   private readonly double Due = due;
   private readonly bool TriggerRules = triggerRules;
-
   private void ExecuteAction()
   {
     Manager.RemoveZDO(Zdo, TriggerRules);

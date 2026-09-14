@@ -7,20 +7,27 @@ public class DelayedRpc(double due, long source, long target, ZDOID zdo, int has
   public static void Clear() => Rpcs.Clear();
 
   public static void Add(float delay, long source, long target, ZDOID zdo, int hash, object[] parameters, bool overwrite)
+    => Add(delay, source, target, zdo, hash, parameters, overwrite, zdo);
+
+  internal static void Add(float delay, long source, long target, ZDOID zdo, int hash, object[] parameters, bool overwrite, ZDOID actor)
   {
     if (overwrite)
-      Remove(zdo, hash);
+      RemoveScoped(zdo, hash, target, source);
     if (delay <= 0f)
-      Manager.Rpc(source, target, zdo, hash, parameters);
+      Manager.Rpc(source, target, zdo, hash, parameters, actor);
     else
-      Rpcs.Add(new(ZNet.instance.m_netTime + delay, source, target, zdo, hash, parameters));
+      Rpcs.Add(new(ZNet.instance.m_netTime + delay, source, target, zdo, hash, parameters) { Actor = actor });
   }
   public static void Remove(ZDOID zdo, int hash)
+  {
+    RemoveScoped(zdo, hash);
+  }
+  private static void RemoveScoped(ZDOID zdo, int hash, long? target = null, long? source = null)
   {
     for (var i = Rpcs.Count - 1; i >= 0; i--)
     {
       var rpc = Rpcs[i];
-      if (rpc.Zdo == zdo && rpc.Hash == hash)
+      if (rpc.Zdo == zdo && rpc.Hash == hash && (!target.HasValue || rpc.Target == target.Value) && (!source.HasValue || rpc.Source == source.Value))
         Rpcs.RemoveAt(i);
     }
   }
@@ -30,9 +37,10 @@ public class DelayedRpc(double due, long source, long target, ZDOID zdo, int has
     {
       var rpc = Rpcs[i];
       if (rpc.Due > ZNet.instance.m_netTime) continue;
-      rpc.ExecuteAction();
       Rpcs.RemoveAt(i);
       i--;
+      // Consume first: an exception must not replay an RPC on every later frame.
+      rpc.ExecuteAction();
     }
   }
   private readonly double Due = due;
@@ -41,10 +49,11 @@ public class DelayedRpc(double due, long source, long target, ZDOID zdo, int has
   private readonly ZDOID Zdo = zdo;
   private readonly int Hash = hash;
   private readonly object[] Parameters = parameters;
+  private ZDOID Actor = zdo;
 
 
   private void ExecuteAction()
   {
-    Manager.Rpc(Source, Target, Zdo, Hash, Parameters);
+    Manager.Rpc(Source, Target, Zdo, Hash, Parameters, Actor);
   }
 }

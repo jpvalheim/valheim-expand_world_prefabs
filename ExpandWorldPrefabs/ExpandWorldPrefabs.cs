@@ -73,6 +73,7 @@ public class EWP : BaseUnityPlugin
     DelayedPoke.Execute();
     DelayedRpc.Execute();
     DelayedTerrain.Execute();
+    TeleportManager.Execute();
     DelayedOwner.Execute();
     DataStorage.SaveSavedData();
   }
@@ -102,6 +103,7 @@ public class CleanupOnShutdown
     PokeTimers.Clear();
     DelayedRpc.Clear();
     DelayedTerrain.Clear();
+    TeleportManager.Clear();
     DelayedOwner.Clear();
   }
 }

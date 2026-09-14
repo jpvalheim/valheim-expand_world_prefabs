@@ -385,8 +385,15 @@ public class Yaml
       Directory.CreateDirectory(BaseDirectory);
   }
 
-  private static IDeserializer Deserializer() => new DeserializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance).Build();
-  private static IDeserializer DeserializerUnSafe() => new DeserializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance).IgnoreUnmatchedProperties().Build();
+  private static IDeserializer Deserializer() => new DeserializerBuilder()
+    .WithNamingConvention(CamelCaseNamingConvention.Instance)
+    .WithTypeConverter(new StringListYamlConverter())
+    .Build();
+  private static IDeserializer DeserializerUnSafe() => new DeserializerBuilder()
+    .WithNamingConvention(CamelCaseNamingConvention.Instance)
+    .WithTypeConverter(new StringListYamlConverter())
+    .IgnoreUnmatchedProperties()
+    .Build();
 
   private static List<T> Deserialize<T>(string raw, string file)
   {

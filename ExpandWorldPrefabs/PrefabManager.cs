@@ -352,7 +352,7 @@ public class Manager
     {
       var delay = terrain.Delay?.Get(f) ?? 0f;
       terrain.Get(f, pos, rot, out var p, out var s, out var resetRadius, out var settings);
-      DelayedTerrain.Add(delay, p, s, settings, resetRadius);
+      DelayedTerrain.Add(delay, p, s, settings, resetRadius, terrain.Callback(zdo, f));
     }
   }
 
@@ -373,6 +373,11 @@ public class Manager
   }
   public static void Rpc(long source, long target, ZDOID id, int hash, object[] parameters)
   {
+    Rpc(source, target, id, hash, parameters, id);
+  }
+
+  internal static void Rpc(long source, long target, ZDOID id, int hash, object[] parameters, ZDOID actor)
+  {
     var router = ZRoutedRpc.instance;
     ZRoutedRpc.RoutedRPCData routedRPCData = new()
     {
@@ -382,6 +387,7 @@ public class Manager
       m_targetZDO = id,
       m_methodHash = hash
     };
+    TeleportManager.Track(actor, hash, parameters);
     ZRpc.Serialize(parameters, ref routedRPCData.m_parameters);
     routedRPCData.m_parameters.SetPos(0);
     if (target == router.m_id || target == ZRoutedRpc.Everybody)

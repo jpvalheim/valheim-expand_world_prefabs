@@ -69,6 +69,7 @@ public class Loading
     var minPaint = data.minPaint != "" ? Parse.Color(data.minPaint, 0f) : data.paint != "" ? Parse.Color(data.paint, 0f) : null;
     var maxPaint = data.maxPaint != "" ? Parse.Color(data.maxPaint, 1f) : data.paint != "" ? Parse.Color(data.paint, 0f) : null;
     var condition = ParseCondition(data);
+    var logTemplates = data.log;
     var addItems = HandleItems(data.addItems);
     var removeItems = HandleItems(data.removeItems);
     var minTerrainHeight = data.minTerrainHeight == null ? null : DataValue.Float(data.minTerrainHeight);
@@ -110,7 +111,7 @@ public class Loading
         Data = DataValue.String(d),
         InjectData = data.injectData,
         Commands = commands,
-        LogSource = data.log == null ? null : new RuleLogSource(data.log),
+        LogSource = logTemplates == null || logTemplates.Count == 0 ? null : new RuleLogSource(logTemplates),
         Weight = data.weight == null ? null : DataValue.Float(data.weight),
         Chance = data.chance == null ? null : DataValue.Float(data.chance),
         Day = data.day == null ? null : DataValue.Bool(data.day),

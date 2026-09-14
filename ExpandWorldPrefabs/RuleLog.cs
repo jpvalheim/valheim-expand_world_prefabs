@@ -28,15 +28,9 @@ internal static class RuleLog
 
   private static TextWriter Open(string path)
   {
-    var directory = Path.GetDirectoryName(path);
-    if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
-    var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read, 65536);
-    try
-    {
-      var writer = new StreamWriter(stream, new System.Text.UTF8Encoding(false), 16384) { AutoFlush = false };
-      return new BoundedRuleLogWriter(writer, stream.Length, Config.RuleLogMaximumFileBytes);
-    }
-    catch { stream.Dispose(); throw; }
+    return new BoundedRuleLogWriter(path, new System.Text.UTF8Encoding(false),
+      Config.RuleLogSegmentBytes, Config.RuleLogMaximumFileBytes,
+      Config.RuleLogRetainedSegments, Config.RuleLogRetention, Log.Warning);
   }
 
   public static void Write(RuleLogSource source, Functions functions) => Writer?.TryWrite(source, functions, Format);

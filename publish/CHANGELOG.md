@@ -2,7 +2,14 @@
   - Adds experimental server owned object support.
   - Fixes for the new game update (item data, terrain and many other things). Thanks JPValheim!
   - Adds support for saving delayed pokes to object data (requires server side data to be enabled). Thanks JPValheim!
-  - Adds new field `log` to add custom log output. Thanks JPValheim!
+  - Adds new field `log` to add custom log output. A rule can write one scalar
+    record or a list of separate records. Thanks JPValheim!
+  - Adds rolling rule-log retention with a compatibility hard-stop mode.
+  - Adds terrain completion callbacks and a serialized terrain fallback for
+    generated dedicated-server zones without live terrain scene components.
+  - Prevents teleport completion rules from updating a stale Player position.
+  - Prevents delayed RPC overwrite from cancelling another recipient's queued
+    call and prevents failed delayed RPC/removal work from replaying every frame.
   - Adds new function `altbiome` to get alternative biome info. Thanks JPValheim!
   - Changes field `biomes` and `bannedBiomes` to support alternative biomes. Thanks JPValheim!
   - Fixes shorthand parsing of `filter` and `bannedFilter` failing in some cases. Thanks JPValheim!
