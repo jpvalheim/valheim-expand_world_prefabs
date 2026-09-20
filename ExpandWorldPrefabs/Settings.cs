@@ -14,9 +14,7 @@ public class Config
   private static ConfigEntry<bool> ConfigServerSideData;
   private static ConfigEntry<bool> ConfigServerOwned;
   private static ConfigEntry<bool> ConfigRuleLogging;
-  private static ConfigEntry<int> ConfigLogGlobalRate, ConfigLogRuleRate, ConfigLogFlushMs,
-    ConfigLogFileMiB, ConfigLogSegmentMiB, ConfigLogRetainedSegments;
-  private static ConfigEntry<RuleLogRetentionMode> ConfigLogRetention;
+  private static ConfigEntry<int> ConfigLogGlobalRate, ConfigLogRuleRate, ConfigLogFlushMs, ConfigLogFileMiB;
   private static ConfigEntry<float> ConfigNpcPlayerListRange;
   private static ConfigEntry<string> ConfigCustomPrefabNames;
 #nullable enable
@@ -28,9 +26,6 @@ public class Config
   public static bool ServerOwned => ConfigServerOwned.Value;
   public static bool RuleLogging => ConfigRuleLogging.Value;
   internal static long RuleLogMaximumFileBytes => (long)ConfigLogFileMiB.Value * 1024 * 1024;
-  internal static long RuleLogSegmentBytes => (long)ConfigLogSegmentMiB.Value * 1024 * 1024;
-  internal static int RuleLogRetainedSegments => ConfigLogRetainedSegments.Value;
-  internal static RuleLogRetentionMode RuleLogRetention => ConfigLogRetention.Value;
   internal static RuleLogOptions GetRuleLogOptions() => new()
   {
     GlobalRate = ConfigLogGlobalRate.Value,
@@ -52,17 +47,9 @@ public class Config
     ConfigNpcPlayerListRange = config.Bind("General", "NPC player list range", 0f, "Maximum distance for NPC profiles to appear in the player list. Set to 0 to disable this feature.");
     ConfigCustomPrefabNames = config.Bind("General", "Custom prefab names", "", "Comma separated list of prefab names that are processed even when server doesn't recognize them.");
 
-    ConfigLogRetention = config.Bind("Rule logging", "Retention mode", RuleLogRetentionMode.Rolling,
-      "Rolling archives a full active log and deletes the oldest completed segments within the configured retention bounds. StopAtLimit preserves the previous hard-stop behavior. Requires restart.");
     ConfigLogFileMiB = config.Bind("Rule logging", "Maximum file MiB", 256,
-       new ConfigDescription("Rolling mode's total completed-segment budget. StopAtLimit uses this as the active-file ceiling. Requires restart.",
+       new ConfigDescription("Append-only file limit. At the limit, RuleLogFileLimitException disables logging until restart; gameplay continues. Stop the server and archive/rename ewp_log.txt before restarting. Existing oversized logs are preserved. Requires restart.",
          new AcceptableValueRange<int>(1, 4096)));
-    ConfigLogSegmentMiB = config.Bind("Rule logging", "Segment MiB", 32,
-      new ConfigDescription("Rolling mode archives ewp_log.txt before the next record would exceed this size. The effective segment limit cannot exceed Maximum file MiB. Requires restart.",
-        new AcceptableValueRange<int>(1, 1024)));
-    ConfigLogRetainedSegments = config.Bind("Rule logging", "Retained segments", 8,
-      new ConfigDescription("Maximum completed rolling segments. The oldest are deleted when either this count or Maximum file MiB is exceeded. Requires restart.",
-        new AcceptableValueRange<int>(1, 128)));
     ConfigLogGlobalRate = config.Bind("Rule logging", "Records per second", 1000,
       new ConfigDescription("Global admission limit before formatting. Burst allowance is min(100, rate). Requires restart.",
         new AcceptableValueRange<int>(1, 10000)));

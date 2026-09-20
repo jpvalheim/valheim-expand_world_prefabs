@@ -66,6 +66,7 @@ public class EWP : BaseUnityPlugin
   public void LateUpdate()
   {
     if (ZNet.instance == null) return;
+    TeleportManager.Execute();
     HandleCreated.Execute();
     HandleChanged.Execute();
     DelayedSpawn.Execute();
@@ -73,7 +74,6 @@ public class EWP : BaseUnityPlugin
     DelayedPoke.Execute();
     DelayedRpc.Execute();
     DelayedTerrain.Execute();
-    TeleportManager.Execute();
     DelayedOwner.Execute();
     DataStorage.SaveSavedData();
   }

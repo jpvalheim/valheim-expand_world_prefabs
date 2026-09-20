@@ -7,9 +7,6 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using ExpandWorld.Prefab;
-using Service;
-using YamlDotNet.Serialization;
-using YamlDotNet.Serialization.NamingConventions;
 
 namespace ExpandWorldPrefabs.Tests;
 
@@ -24,78 +21,15 @@ internal static class RuleLogChecks
 
   internal static void RunAll()
   {
-    Action[] tests = { PluralTemplates, AppendAndOwnership, BoundedStall, MemoryAndSizeLimits,
+    Action[] tests = { AppendAndOwnership, BoundedStall, MemoryAndSizeLimits,
       RateGatesAndBrokenTemplate, ToggleAndOpenFailure, WriteFlushCloseFailures,
-      PeriodicFlushUnderTraffic, ShutdownDuringStall, ConcurrentProducers,
-      RollingRetention, HardStopCompatibility, Cadences };
+      PeriodicFlushUnderTraffic, ShutdownDuringStall, ConcurrentProducers, Cadences };
     foreach (var test in tests)
     {
       var watch = Stopwatch.StartNew();
       test();
       System.Console.WriteLine("PASS " + test.Method.Name + " (" + watch.ElapsedMilliseconds + " ms)");
     }
-  }
-
-  private static void PluralTemplates()
-  {
-    var deserializer = new DeserializerBuilder()
-      .WithNamingConvention(CamelCaseNamingConvention.Instance)
-      .WithTypeConverter(new StringListYamlConverter())
-      .Build();
-    var scalar = deserializer.Deserialize<LogData>("log: first ;; second");
-    Check(scalar.log != null && scalar.log.SequenceEqual(new[] { "first ;; second" }),
-      "scalar form must remain one literal record");
-    var sequence = deserializer.Deserialize<LogData>("log:\n- first\n- second\n- third");
-    Check(sequence.log != null && sequence.log.SequenceEqual(new[] { "first", "second", "third" }),
-      "sequence form must preserve declaration order");
-    var empty = deserializer.Deserialize<LogData>("log: []");
-    Check(empty.log != null && empty.log.Count == 0, "empty sequence must deserialize safely");
-    var blank = deserializer.Deserialize<LogData>("log:");
-    Check(blank.log != null && blank.log.Count == 0, "blank value must preserve disabled log behavior");
-    var quotedEmpty = deserializer.Deserialize<LogData>("log: \"\"");
-    Check(quotedEmpty.log != null && quotedEmpty.log.SequenceEqual(new[] { "" }),
-      "explicit quoted empty string must remain a record value");
-
-    var sink = new Sink();
-    var worker = new BufferedRuleLog(() => sink, new RuleLogOptions { GlobalRate = 10000, RuleRate = 10000 }, _ => { });
-    try
-    {
-      Check(worker.TryWrite(new RuleLogSource(new[] { "first", "second", "third" }), "", Echo), "plural admission");
-      Check(worker.TryWrite(new RuleLogSource("<dynamic>"), "resolved ;; remains one record", Echo),
-        "dynamic separator admission");
-      var siblings = new RuleLogSource(new[] { "<bad>", "<good>" });
-      Check(worker.TryWrite(siblings, "good", (template, value) => template == "<bad>" ? throw new FormatException() : value),
-        "good sibling survives formatter failure");
-      Check(siblings.Templates[0].Disabled && !siblings.Templates[1].Disabled,
-        "only malformed template is disabled");
-    }
-    finally { Check(worker.Stop(1000), "plural worker stop"); }
-    var records = sink.Lines.Where(line => !line.StartsWith("[EWP LOG GAP]")).ToArray();
-    Check(records.SequenceEqual(new[] { "first", "second", "third", "resolved ;; remains one record", "good" }),
-      "plural templates must queue independently in declaration order");
-
-    var sizeSink = new Sink();
-    var sizeWorker = new BufferedRuleLog(() => sizeSink,
-      new RuleLogOptions { MaxRecordChars = 50, GlobalRate = 10000, RuleRate = 10000 }, _ => { });
-    try
-    {
-      var source = new RuleLogSource(new[] { new string('a', 40), new string('b', 40) });
-      Check(sizeWorker.TryWrite(source, "", Echo), "size limit applies per record");
-    }
-    finally { Check(sizeWorker.Stop(1000), "plural size worker stop"); }
-    Check(sizeSink.Lines.Count == 2, "combined scalar length must not become one record ceiling");
-
-    var rateSink = new Sink();
-    var rateWorker = new BufferedRuleLog(() => rateSink, new RuleLogOptions { RuleRate = 1 }, _ => { });
-    try { Check(rateWorker.TryWrite(new RuleLogSource(new[] { "one", "two" }), "", Echo), "shared rate first admission"); }
-    finally { Check(rateWorker.Stop(1000), "plural rate worker stop"); }
-    Check(rateSink.Lines.Count(line => !line.StartsWith("[EWP LOG GAP]")) == 1,
-      "plural templates must share one per-rule rate bucket");
-  }
-
-  private sealed class LogData
-  {
-    public StringList? log { get; set; }
   }
 
   private sealed class Sink : TextWriter
@@ -367,70 +301,6 @@ internal static class RuleLogChecks
     Check(records.Length == accepted.Count && records.OrderBy(x => x).SequenceEqual(accepted.OrderBy(x => x)),
       "every accepted record exactly once");
     Check(!sink.WrongThread && worker.PendingRecords == 0 && worker.PendingBytes == 0, "concurrent accounting");
-  }
-
-  private static void RollingRetention()
-  {
-    string dir = Path.Combine(Path.GetTempPath(), "ewp-rolling-log-" + Guid.NewGuid().ToString("N"));
-    Directory.CreateDirectory(dir);
-    string path = Path.Combine(dir, "ewp_log.txt");
-    var notices = new ConcurrentQueue<string>();
-    try
-    {
-      File.WriteAllText(path, new string('o', 700), new UTF8Encoding(false));
-      using (var writer = new BoundedRuleLogWriter(path, new UTF8Encoding(false),
-        512, 2048, 3, RuleLogRetentionMode.Rolling, notices.Enqueue))
-      {
-        writer.WriteLine("first-after-oversized-startup");
-        writer.Flush();
-      }
-      var startupArchive = Directory.GetFiles(dir, "ewp_log.*.txt").Single();
-      Check(File.ReadAllText(startupArchive) == new string('o', 700),
-        "oversized startup file must be archived intact");
-      Check(File.ReadAllText(path).Contains("first-after-oversized-startup"),
-        "logging must continue after oversized startup rollover");
-      Check(notices.Any(note => note.Contains("reason=startup")), "startup rollover receipt");
-
-      var unrelated = Path.Combine(dir, "ewp_log.notes.txt");
-      File.WriteAllText(unrelated, "administrator notes", new UTF8Encoding(false));
-
-      for (var session = 0; session < 6; session++)
-      {
-        using var writer = new BoundedRuleLogWriter(path, new UTF8Encoding(false),
-          512, 1200, 2, RuleLogRetentionMode.Rolling, notices.Enqueue);
-        writer.WriteLine("session-" + session + "-" + new string((char)('a' + session), 420));
-        writer.Flush();
-      }
-      var archives = Directory.GetFiles(dir, "ewp_log.*.txt").Where(file => file != unrelated).ToArray();
-      Check(archives.Length <= 2, "rolling retention count must delete oldest segments");
-      Check(archives.Sum(file => new FileInfo(file).Length) <= 1200,
-        "rolling retention byte budget must delete oldest segments");
-      Check(!File.ReadAllText(path).Contains(new string('o', 100)),
-        "active log must not retain the oldest oversized prefix");
-      Check(File.Exists(unrelated) && File.ReadAllText(unrelated) == "administrator notes",
-        "retention must not delete similarly named administrator files");
-    }
-    finally { Directory.Delete(dir, true); }
-  }
-
-  private static void HardStopCompatibility()
-  {
-    string dir = Path.Combine(Path.GetTempPath(), "ewp-hard-stop-log-" + Guid.NewGuid().ToString("N"));
-    Directory.CreateDirectory(dir);
-    string path = Path.Combine(dir, "ewp_log.txt");
-    try
-    {
-      File.WriteAllText(path, new string('x', 63), new UTF8Encoding(false));
-      using var writer = new BoundedRuleLogWriter(path, new UTF8Encoding(false),
-        16, 64, 1, RuleLogRetentionMode.StopAtLimit, _ => { });
-      var stopped = false;
-      try { writer.WriteLine("y"); }
-      catch (RuleLogFileLimitException) { stopped = true; }
-      Check(stopped, "StopAtLimit must preserve the previous hard-stop behavior");
-      Check(File.ReadAllText(path) == new string('x', 63), "hard stop must preserve existing bytes");
-      Check(Directory.GetFiles(dir, "ewp_log.*.txt").Length == 0, "hard stop must not rotate");
-    }
-    finally { Directory.Delete(dir, true); }
   }
 
   private static void Cadences()

@@ -47,7 +47,7 @@ public class Data
   [DefaultValue(null)]
   public string[]? commands;
   [DefaultValue(null)]
-  public StringList? log;
+  public string? log;
   [DefaultValue(null)]
   public string? day;
   [DefaultValue(null)]
@@ -743,10 +743,6 @@ public class InfoType
 public class TerrainData
 {
   [DefaultValue(null)]
-  public string? onSuccess;
-  [DefaultValue(null)]
-  public string? onFailure;
-  [DefaultValue(null)]
   public string? delay;
   [DefaultValue(null)]
   public string? pos;
@@ -836,25 +832,6 @@ public class Filter
 
 public class Terrain(TerrainData data)
 {
-  // Same comma-separated, split-before-substitution convention as poke pars.
-  private readonly string[]? OnSuccess = data.onSuccess == null ? null : Parse.ToArr(data.onSuccess);
-  private readonly string[]? OnFailure = data.onFailure == null ? null : Parse.ToArr(data.onFailure);
-  internal Action<bool>? Callback(ZDO source, Functions f)
-  {
-    if (OnSuccess == null && OnFailure == null) return null;
-    var success = OnSuccess?.Select(f.Replace).ToArray();
-    var failure = OnFailure?.Select(f.Replace).ToArray();
-    var manager = ZDOMan.instance;
-    var id = source.m_uid;
-    return completed =>
-    {
-      var args = completed ? success : failure;
-      if (args == null || args.Length == 0 || string.IsNullOrWhiteSpace(args[0])) return;
-      if (!ReferenceEquals(manager, ZDOMan.instance) || !ReferenceEquals(manager.GetZDO(id), source) || !source.Valid) return;
-      // Do not re-enter the source rule before its final data write has finished.
-      DelayedPoke.Add(0.01f, [id], args);
-    };
-  }
   public readonly IFloatValue? Delay = data.delay == null ? null : DataValue.Float(data.delay);
   public readonly IFloatValue? ResetRadius = data.resetRadius == null ? null : DataValue.Float(data.resetRadius);
   public readonly IVector3Value? Position = data.pos != null ? DataValue.Vector3(data.pos) : data.position != null ? DataValue.Vector3(data.position) : null;

@@ -2,30 +2,20 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
-using System.Linq;
 using System.Text;
 using System.Threading;
 
 namespace ExpandWorld.Prefab;
 
-// One action instance per loaded rule, not per player, message or event.
-// Templates share the action's rate bucket and are recreated on YAML reload.
-internal sealed class RuleLogSource
-{
-  internal RuleLogSource(string value) : this([value]) { }
-  internal RuleLogSource(IEnumerable<string> templates) => Templates = [.. templates.Select(template => new RuleLogTemplate(template))];
-  internal readonly RuleLogTemplate[] Templates;
-  internal bool Disabled => Templates.Length == 1 && Templates[0].Disabled;
-  internal double Tokens;
-  internal long LastTick;
-  internal bool Started;
-}
-
-internal sealed class RuleLogTemplate(string template)
+// One instance per loaded rule, not per player, message or event. Recreated on YAML reload.
+internal sealed class RuleLogSource(string template)
 {
   internal readonly string Template = template;
   internal readonly bool NeedsFormatting = template.IndexOf('<') >= 0;
   internal volatile bool Disabled;
+  internal double Tokens;
+  internal long LastTick;
+  internal bool Started;
 }
 
 internal sealed class RuleLogOptions
@@ -48,7 +38,7 @@ internal sealed class RuleLogOptions
   }
 }
 
-// Pure BCL transport. Only the worker invokes the sink and reporting callbacks.
+// Pure BCL transport. Only the worker invokes the sink and diagnostics callbacks.
 // Producer locks protect small queue/accounting operations, never file I/O or formatting.
 internal sealed class BufferedRuleLog
 {
@@ -94,17 +84,8 @@ internal sealed class BufferedRuleLog
 
   internal bool TryWrite<T>(RuleLogSource source, T context, Func<string, T, string> format)
   {
-    var accepted = false;
-    foreach (var template in source.Templates)
-      if (TryWrite(source, template, context, format))
-        accepted = true;
-    return accepted;
-  }
-
-  private bool TryWrite<T>(RuleLogSource source, RuleLogTemplate template, T context, Func<string, T, string> format)
-  {
     if (!Enabled || Stopping || Failed) return false;
-    if (template.Disabled) { Interlocked.Increment(ref FormatDrops); return false; }
+    if (source.Disabled) { Interlocked.Increment(ref FormatDrops); return false; }
     // Short bookkeeping lock only. Never wait for queue capacity or filesystem I/O.
     int reservation = Options.MaxRecordChars * 2 + 64;
     lock (Sync)
@@ -126,20 +107,20 @@ internal sealed class BufferedRuleLog
     string? message = null;
     try
     {
-      if (template.Template.Length > Options.MaxRecordChars)
+      if (source.Template.Length > Options.MaxRecordChars)
       { Interlocked.Increment(ref SizeDrops); return false; }
-      message = template.NeedsFormatting ? format(template.Template, context) : template.Template;
+      message = source.NeedsFormatting ? format(source.Template, context) : source.Template;
       if (message == null || message.Length > Options.MaxRecordChars)
       { message = null; Interlocked.Increment(ref SizeDrops); return false; }
     }
     catch (Exception e)
     {
-      template.Disabled = true;
+      source.Disabled = true;
       Interlocked.Increment(ref FormatDrops);
       // One bounded sample, not a growing set of failed templates or resolved player text.
       Interlocked.CompareExchange(ref FormatExample,
-        template.Template.Substring(0, Math.Min(128, template.Template.Length)) + ": " +
-        e.GetType().Name + ". Template disabled until YAML reload.", null);
+        source.Template.Substring(0, Math.Min(128, source.Template.Length)) + ": " +
+        e.GetType().Name + ". Rule disabled until YAML reload.", null);
       return false;
     }
     finally
@@ -290,6 +271,6 @@ internal sealed class BufferedRuleLog
   }
   private void SafeReport(string message)
   {
-    try { Report(message); } catch { /* Reporting must not restart a failing writer. */ }
+    try { Report(message); } catch { /* Diagnostics must not restart a failing writer. */ }
   }
 }

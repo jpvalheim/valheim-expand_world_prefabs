@@ -59,6 +59,10 @@ public class Manager
     // Already destroyed before.
     if (ZDOMan.instance.m_deadZDOs.ContainsKey(zdo.m_uid)) return false;
     if (!ZNet.instance.IsServer()) return false;
+    // Queue the complete event while a client-owned Player ZDO may still hold
+    // its pre-teleport position. This protects every rule action, not only
+    // rules triggered by resetcloth.
+    if (TeleportManager.TryDeferPlayerEvent(type, args, zdo)) return false;
     SupportAttach.SyncAttachedWorldTransform(zdo);
     var name = ZNetScene.instance.GetPrefab(zdo.m_prefab)?.name ?? "";
     ObjectFunctions f = new(name, args, zdo);
@@ -171,6 +175,7 @@ public class Manager
   public static bool CheckCancel(ActionType type, string[] args, ZDO zdo)
   {
     if (!ZNet.instance.IsServer()) return false;
+    if (TeleportManager.IsPlayerWriteQuarantined(zdo.m_uid)) return false;
     SupportAttach.SyncAttachedWorldTransform(zdo);
     var name = ZNetScene.instance.GetPrefab(zdo.m_prefab)?.name ?? "";
     ObjectFunctions f = new(name, args, zdo);
@@ -352,7 +357,7 @@ public class Manager
     {
       var delay = terrain.Delay?.Get(f) ?? 0f;
       terrain.Get(f, pos, rot, out var p, out var s, out var resetRadius, out var settings);
-      DelayedTerrain.Add(delay, p, s, settings, resetRadius, terrain.Callback(zdo, f));
+      DelayedTerrain.Add(delay, p, s, settings, resetRadius);
     }
   }
 

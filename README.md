@@ -27,15 +27,11 @@ Config file `expand_world_prefabs.cfg` is created automatically when the game is
   - Server side data is just regular data, but prefixed with `ewp_`.
   - This reduces network traffic because the data is not sent to clients.
 - Rule logging: If disabled, `log` actions stop adding records to `expand_world/ewp_log.txt`.
-  - `log` accepts one scalar string or a YAML sequence of strings for multiple records.
-  - Retention mode (default: `Rolling`): Archives full active segments and removes the oldest retained segments. `StopAtLimit` preserves the former hard stop.
-  - Segment MiB (default: `32`): Active-file rollover threshold.
-  - Retained segments (default: `8`): Maximum completed segment count.
-  - Maximum file MiB (default: `256`): Completed-segment budget in rolling mode, or the active-file ceiling in `StopAtLimit` mode.
+  - Existing records are kept when the game is restarted.
   - Records per second (default: `1000`): Maximum refill rate shared by all rules.
   - Records per rule per second (default: `250`): Maximum refill rate for one rule, shared by all objects.
   - Flush interval milliseconds (default: `1000`): How often pending records are flushed.
-  - Rate, flush and retention settings require restarting the game. The enable setting can be changed while running.
+  - Rate and flush settings require restarting the game. The enable setting can be changed while running.
 - Persist spawned players: If disabled, EWP no longer supports persisting EWP spawned players.
 - NPC player list range: Maximum distance for NPC profiles to appear in the player list. Set to 0 to disable this feature.
   - This is required for NPC chat, because clients only accept chat messages from players on the player list.
