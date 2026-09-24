@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
 
@@ -6,7 +7,8 @@ namespace ExpandWorld.Prefab;
 
 internal static class TerrainManager
 {
-  internal static void Modify(Vector3 pos, float radius, TerrainOp.Settings settings, float resetRadius)
+  internal static HashSet<Vector2s> Modify(Vector3 pos, float radius, TerrainOp.Settings settings, float resetRadius,
+    HashSet<Vector2s>? onlyZones = null)
   {
     // Terrain may have to be modified in multiple zones.
     var corner1 = pos + new Vector3(radius, 0, radius);
@@ -22,15 +24,29 @@ internal static class TerrainManager
     var startJ = Mathf.Min(zone1.y, zone2.y, zone3.y, zone4.y);
     var endJ = Mathf.Max(zone1.y, zone2.y, zone3.y, zone4.y);
 
+    var retryZones = new HashSet<Vector2s>();
     for (var i = startI; i <= endI; i++)
     {
       for (var j = startJ; j <= endJ; j++)
       {
         var zone = new Vector2s(i, j);
-        if (!ZoneSystem.instance.IsZoneGenerated(zone)) continue;
-        ModifyZone(pos, zone, settings, resetRadius);
+        if (onlyZones != null && !onlyZones.Contains(zone))
+          continue;
+        TerrainZoneResult result;
+        if (!ZoneSystem.instance.IsZoneGenerated(zone))
+        {
+          result = new(false, "zone-not-generated");
+          retryZones.Add(zone);
+        }
+        else
+        {
+          result = ModifyZone(pos, zone, settings, resetRadius);
+        }
+        if (!result.Success)
+          retryZones.Add(zone);
       }
     }
+    return retryZones;
   }
 
   internal static bool GenerateCompilers(Vector3 pos, float radius)
@@ -61,25 +77,86 @@ internal static class TerrainManager
     return created;
   }
 
-  private static void ModifyZone(Vector3 pos, Vector2s zone, TerrainOp.Settings settings, float resetRadius)
+  private static TerrainZoneResult ModifyZone(Vector3 pos, Vector2s zone, TerrainOp.Settings settings, float resetRadius)
   {
     var compiler = FindCompiler(zone);
-    if (compiler == null) return;
-    if (resetRadius > 0f)
+    if (compiler == null)
     {
-      ResetInZdo(pos, resetRadius, zone, compiler);
-      return;
+      GenerateCompiler(zone);
+      return new(false, "compiler-created-awaiting-ready");
+    }
+    if (resetRadius > 0f)
+      return ResetInZdo(pos, resetRadius, zone, compiler);
+
+    var instance = ZNetScene.instance.FindInstance(compiler.m_uid);
+    if (!instance)
+    {
+      var loaded = TerrainComp.FindTerrainCompiler(ZoneSystem.GetZonePos(zone));
+      if (loaded != null && loaded.m_nview != null && loaded.m_nview.IsValid() && loaded.m_nview.GetZDO().m_uid != compiler.m_uid)
+      {
+        return new(false, "different-live-compiler");
+      }
+      // A late-bound compiler may see raw terrain before the location's
+      // modifiers exist. Save against the reconstructed reference instead.
+      return ApplySerialized(compiler, zone, pos, settings);
     }
 
-    var terrain = ZNetScene.instance.FindInstance(compiler.m_uid)?.GetComponent<TerrainComp>();
-    if (terrain != null)
-      TerrainOperations.ApplyLegacyEwpOperation(terrain, pos, settings);
+    var terrain = instance.GetComponent<TerrainComp>();
+    var componentPresent = terrain != null;
+    var initialized = componentPresent && terrain!.m_initialized;
+    var heightmapPresent = componentPresent && terrain!.m_hmap != null;
+    var viewValid = componentPresent && terrain!.m_nview != null && terrain.m_nview.IsValid();
+    if (RequiresSerializedPath(true, componentPresent, initialized, heightmapPresent, viewValid))
+    {
+      return ApplySerialized(compiler, zone, pos, settings);
+    }
+    var readyTerrain = terrain!;
+    var readyView = readyTerrain.m_nview!;
+    // Native Save explicitly rejects non-owners. Claim only this terrain
+    // compiler for the synchronous load/apply/save; never touch a Player owner.
+    if (!readyView.IsOwner())
+      readyView.ClaimOwnership();
+    if (!readyView.IsOwner())
+      return new(false, "terrain-ownership-unavailable");
+    readyTerrain.CheckLoad();
+    var storedBefore = compiler.GetByteArray(ZDOVars.s_TCData);
+    if (TerrainOperations.ApplyLegacyEwpOperation(readyTerrain, pos, settings))
+    {
+      var storedAfter = compiler.GetByteArray(ZDOVars.s_TCData);
+      var paintOnly = settings.m_paintCleared && !settings.m_level && !settings.m_raise && !settings.m_smooth;
+      var unchangedPaint = paintOnly && storedAfter != null && ReferenceEquals(storedBefore, storedAfter) && readyTerrain.m_lastHash == readyTerrain.ComputePaintMaskHash();
+      if (!unchangedPaint && !HasSavedOperation(storedAfter, readyTerrain.m_operations))
+        throw new InvalidOperationException("Terrain returned without a matching stored operation receipt.");
+      TerrainSync.PublishNativeSave(compiler);
+      return new(true, unchangedPaint ? "native-noop-republished" : "native-saved");
+    }
+    return new(false, "native-operation-deferred");
   }
 
-  private static void ResetInZdo(Vector3 pos, float radius, Vector2s zone, ZDO zdo)
+  private static TerrainZoneResult ApplySerialized(ZDO compiler, Vector2s zone, Vector3 pos,
+    TerrainOp.Settings settings)
+  {
+    var success = SerializedTerrain.Apply(compiler, zone, pos, settings,
+      out var reason);
+    return new(success, reason);
+  }
+
+  internal static bool RequiresSerializedPath(bool instancePresent, bool componentPresent,
+    bool initialized, bool heightmapPresent, bool viewValid) =>
+    !instancePresent || !componentPresent || !initialized || !heightmapPresent || !viewValid;
+
+  private static bool HasSavedOperation(byte[]? bytes, int operations)
+  {
+    if (bytes == null) return false;
+    var package = new ZPackage(Utils.Decompress(bytes));
+    return package.ReadInt() == 1 && package.ReadInt() == operations;
+  }
+
+  private static TerrainZoneResult ResetInZdo(Vector3 pos, float radius, Vector2s zone, ZDO zdo)
   {
     var byteArray = zdo.GetByteArray(ZDOVars.s_TCData);
-    if (byteArray == null) return;
+    if (byteArray == null)
+      return new(true, "nothing-to-reset");
     var center = ZoneSystem.GetZonePos(zone);
     var change = false;
     var from = new ZPackage(Utils.Decompress(byteArray));
@@ -143,9 +220,10 @@ internal static class TerrainManager
         from.ReadSingle();
       }
     }
-    if (!change) return;
-    zdo.DataRevision += 100;
-    zdo.Set(ZDOVars.s_TCData, Utils.Compress(to.GetArray()));
+    if (!change)
+      return new(true, "nothing-in-radius");
+    TerrainSync.Commit(zdo, Utils.Compress(to.GetArray()));
+    return new(true, "reset-saved");
   }
 
   private static Vector3 VertexToWorld(Vector3 pos, int j, int i)
@@ -159,11 +237,12 @@ internal static class TerrainManager
 
   private static bool GenerateCompiler(Vector2s zone)
   {
-    if (FindCompiler(zone) != null)
-      return false;
+    if (FindCompiler(zone) != null) return false;
 
+    var prefab = ZNetScene.instance.GetPrefab(TerrainCompilerHash);
+    var view = prefab != null ? prefab.GetComponent<ZNetView>() : null;
+    if (view == null) return false;
     var zdo = ZDOMan.instance.CreateNewZDO(ZoneSystem.GetZonePos(zone), TerrainCompilerHash);
-    var view = ZNetScene.instance.GetPrefab(TerrainCompilerHash).GetComponent<ZNetView>();
     zdo.m_prefab = TerrainCompilerHash;
     zdo.Persistent = view.m_persistent;
     zdo.Type = view.m_type;
@@ -176,6 +255,7 @@ internal static class TerrainManager
     var zdos = Helper.GetZDOsInSector(zone);
     return zdos?.FirstOrDefault(z => z.m_prefab == TerrainCompilerHash);
   }
+
 }
 
 internal static class TerrainOperations
@@ -186,10 +266,10 @@ internal static class TerrainOperations
   /// using that routine would spread the same border paint more than once.
   /// Keep established EWP behavior while native packets stay fully native.
   /// </summary>
-  internal static void ApplyLegacyEwpOperation(TerrainComp terrain, Vector3 pos, TerrainOp.Settings settings)
+  internal static bool ApplyLegacyEwpOperation(TerrainComp terrain, Vector3 pos, TerrainOp.Settings settings)
   {
-    if (!terrain.m_initialized)
-      return;
+    if (!terrain.m_initialized || terrain.m_nview == null || !terrain.m_nview.IsValid() || !terrain.m_nview.IsOwner())
+      return false;
 
     if (settings.m_level)
       terrain.LevelTerrain(pos + Vector3.up * settings.m_levelOffset, settings.m_levelRadius, settings.m_square);
@@ -208,6 +288,7 @@ internal static class TerrainOperations
     terrain.m_hmap.Poke(1, paintOnly);
     if (ClutterSystem.instance)
       ClutterSystem.instance.ResetGrass(pos, settings.GetRadius());
+    return true;
   }
 
   private static void PaintLegacy(TerrainComp terrain, Vector3 worldPos, TerrainOp.Settings settings)

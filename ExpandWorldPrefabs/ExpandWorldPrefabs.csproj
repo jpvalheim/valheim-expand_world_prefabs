@@ -40,6 +40,9 @@
     <Reference Include="SPlatform">
       <HintPath>..\..\Libs\SPlatform.dll</HintPath>
     </Reference>
+    <Reference Include="SoftReferenceableAssets">
+      <HintPath>..\..\Libs\SoftReferenceableAssets.dll</HintPath>
+    </Reference>
     <Reference Include="YamlDotNet">
       <HintPath>..\..\Libs\YamlDotNet.dll</HintPath>
     </Reference>
