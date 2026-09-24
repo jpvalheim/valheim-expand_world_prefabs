@@ -27,7 +27,8 @@ internal static class TeleportManager
   internal static void Track(ZDOID actor, int hash, object[] parameters)
   {
     if (!IsTeleport(hash) || actor == ZDOID.None || ZNet.instance == null ||
-        !TryGetDestination(parameters, out var destination))
+        !TryGetDestination(parameters, out var destination) ||
+        !HasConnectedRemotePlayer(actor))
       return;
 
     Watches.TryGetValue(actor, out var previous);
@@ -80,13 +81,18 @@ internal static class TeleportManager
     if (ZNet.instance == null || !PersistPlayers.IsRealPlayer(zdo))
       return false;
 
-    // For a client-only teleport, the resetcloth callback may be the first
-    // observable boundary. A fresh owner ZDO update distinguishes an ordinary
-    // callback from a teleport and normally arrives almost immediately.
-    if (!TryGetUnsafeWatch(zdo, out var watch))
-      watch = CreateOwnerSyncBarrier(zdo);
+    // Resetcloth also occurs during ordinary Player startup and respawn. It is
+    // not evidence of a teleport, so it must never create a synchronization
+    // watch. Route observation and desynchronized-peer discovery provide the
+    // teleport evidence instead.
+    if (!ShouldDeferResetCloth(TryGetUnsafeWatch(zdo, out var watch)))
+      return false;
 
-    watch.PendingResetClothEvents++;
+    if (watch.PendingResetCloth)
+      watch.CoalescedResetClothCallbacks = CoalesceResetClothCallbacks(watch.PendingResetCloth,
+        watch.CoalescedResetClothCallbacks);
+    else
+      watch.PendingResetCloth = true;
     return true;
   }
 
@@ -161,27 +167,6 @@ internal static class TeleportManager
 
   internal static void Clear() => Watches.Clear();
 
-  internal static TeleportNetworkState? CaptureNetwork(ZRpc rpc)
-  {
-    if (Watches.Count == 0 || ZDOMan.instance == null) return null;
-    var state = new TeleportNetworkState(ZNet.instance?.GetPeer(rpc)?.m_uid ?? 0);
-    foreach (var pair in Watches)
-      state.Players.Add(new PlayerNetworkSnapshot(pair.Key, ZDOMan.instance.GetZDO(pair.Key)));
-    return state;
-  }
-
-  internal static void CompleteNetwork(TeleportNetworkState? before)
-  {
-    if (before == null || ZDOMan.instance == null) return;
-    foreach (var player in before.Players)
-    {
-      if (!Watches.TryGetValue(player.Id, out var watch)) continue;
-      var zdo = ZDOMan.instance.GetZDO(player.Id);
-      if (player.Equals(new PlayerNetworkSnapshot(player.Id, zdo))) continue;
-      ObserveOwnerUpdate(watch, zdo, before.Peer);
-    }
-  }
-
   internal static bool IsPlayerWriteQuarantined(ZDOID id)
   {
     if (!Watches.ContainsKey(id)) return false;
@@ -216,19 +201,6 @@ internal static class TeleportManager
     return true;
   }
 
-  private static TeleportWatch CreateOwnerSyncBarrier(ZDO zdo)
-  {
-    var watch = new TeleportWatch(zdo.m_position,
-      ZNet.instance!.m_netTime + StallWarningSeconds, false)
-    {
-      OwnerSyncBarrier = true,
-      OwnerPeer = zdo.GetOwner(),
-      SourcePosition = zdo.m_position
-    };
-    Watches[zdo.m_uid] = watch;
-    return watch;
-  }
-
   private static void DiscoverInferredWatches()
   {
     if (ZNet.instance == null || ZDOMan.instance == null || !ZNet.instance.IsServer()) return;
@@ -250,6 +222,14 @@ internal static class TeleportManager
       IsOutsidePeerActiveArea(zdo.m_position, peer);
   }
 
+  private static bool HasConnectedRemotePlayer(ZDOID actor)
+  {
+    var zdo = ZDOMan.instance?.GetZDO(actor);
+    var peer = zdo == null ? null : PeerManager.GetPeer(zdo);
+    return ShouldTrackRemotePlayerTeleport(zdo != null && PersistPlayers.IsRealPlayer(zdo),
+      peer != null && peer.m_characterID == actor);
+  }
+
   private static TeleportWatch CreateInferredWatch(ZDO zdo, ZNetPeer peer)
   {
     var watch = new TeleportWatch(peer.m_refPos,
@@ -260,14 +240,6 @@ internal static class TeleportManager
 
   private static bool IsSafe(TeleportWatch watch, ZDO zdo, ZNetPeer peer)
   {
-    if (watch.OwnerSyncBarrier && !watch.Inferred)
-    {
-      if (!HasTeleportMovement(watch.SourcePosition, zdo.m_position, peer.m_refPos))
-        return IsOwnerSyncBarrierSafe(watch.OwnerUpdateObserved, zdo.m_position, peer.m_refPos);
-      watch.Inferred = true;
-      watch.Destination = peer.m_refPos;
-    }
-
     if (watch.Inferred)
     {
       watch.Destination = peer.m_refPos;
@@ -277,34 +249,14 @@ internal static class TeleportManager
     return IsKnownTeleportSafe(zdo.m_position, watch.Destination, peer.m_refPos);
   }
 
-  private static void ObserveOwnerUpdate(TeleportWatch watch, ZDO? zdo, long sender)
-  {
-    if (!watch.OwnerSyncBarrier || watch.OwnerUpdateObserved || zdo == null ||
-        sender == 0 || sender != watch.OwnerPeer || zdo.GetOwner() != sender)
-      return;
-
-    watch.OwnerUpdateObserved = true;
-    var peer = PeerManager.GetPeer(zdo);
-    if (peer != null && peer.m_characterID == zdo.m_uid &&
-        HasTeleportMovement(watch.SourcePosition, zdo.m_position, peer.m_refPos))
-    {
-      watch.Inferred = true;
-      watch.Destination = peer.m_refPos;
-    }
-  }
-
   private static void ReleaseResetCloth(TeleportWatch watch, ZDO zdo)
   {
-    for (var index = 0; index < watch.PendingResetClothEvents; index++)
-    {
-      if (Watches.TryGetValue(zdo.m_uid, out var next))
-      {
-        next.PendingResetClothEvents += watch.PendingResetClothEvents - index;
-        return;
-      }
-      Manager.Handle(ActionType.State, ["resetcloth"], zdo);
-    }
-    watch.PendingResetClothEvents = 0;
+    if (!watch.PendingResetCloth) return;
+    watch.PendingResetCloth = false;
+    if (watch.CoalescedResetClothCallbacks > 0)
+      Log.Warning($"Coalesced {watch.CoalescedResetClothCallbacks} duplicate resetcloth callbacks for {zdo.m_uid} during Player synchronization.");
+    watch.CoalescedResetClothCallbacks = 0;
+    Manager.Handle(ActionType.State, ["resetcloth"], zdo);
   }
 
   private static void ReleasePending(TeleportWatch watch, ZDO zdo)
@@ -318,14 +270,15 @@ internal static class TeleportManager
 
   private static void AdoptPending(TeleportWatch previous, TeleportWatch next)
   {
-    next.PendingResetClothEvents = previous.PendingResetClothEvents;
+    next.PendingResetCloth = previous.PendingResetCloth;
+    next.CoalescedResetClothCallbacks = previous.CoalescedResetClothCallbacks;
     next.CapacityWarningWritten = previous.CapacityWarningWritten;
     next.PendingEvents.AddRange(previous.PendingEvents);
   }
 
   private static void DropPending(TeleportWatch watch, ZDOID actor, string reason)
   {
-    var count = watch.PendingResetClothEvents + watch.PendingEvents.Count;
+    var count = (watch.PendingResetCloth ? 1 : 0) + watch.PendingEvents.Count;
     if (count > 0)
       Log.Warning($"Skipped {count} deferred Player events for {actor}: {reason}.");
   }
@@ -353,9 +306,13 @@ internal static class TeleportManager
     HorizontalDistance(sourcePosition, zdoPosition) > PlayerResyncTolerance ||
     HorizontalDistance(sourcePosition, peerPosition) > PlayerResyncTolerance;
 
-  internal static bool IsOwnerSyncBarrierSafe(bool ownerUpdateObserved,
-    Vector3 zdoPosition, Vector3 peerPosition) =>
-    ownerUpdateObserved && IsPlayerResynchronized(zdoPosition, peerPosition);
+  internal static bool ShouldTrackRemotePlayerTeleport(bool realPlayer,
+    bool hasConnectedOwnerPeer) => realPlayer && hasConnectedOwnerPeer;
+
+  internal static bool ShouldDeferResetCloth(bool hasUnsafeWatch) => hasUnsafeWatch;
+
+  internal static int CoalesceResetClothCallbacks(bool pending, int callbacks) =>
+    pending ? callbacks + 1 : callbacks;
 
   // Mirrors ZNetScene.PointInsideActiveArea with the simulation distance
   // negotiated for this peer instead of the dedicated server's local setting.
@@ -394,11 +351,8 @@ internal static class TeleportManager
     internal double StallWarningAt { get; } = stallWarningAt;
     internal bool StallWarningWritten { get; set; }
     internal bool Inferred { get; set; } = inferred;
-    internal bool OwnerSyncBarrier { get; set; }
-    internal long OwnerPeer { get; set; }
-    internal bool OwnerUpdateObserved { get; set; }
-    internal Vector3 SourcePosition { get; set; }
-    internal int PendingResetClothEvents { get; set; }
+    internal bool PendingResetCloth { get; set; }
+    internal int CoalescedResetClothCallbacks { get; set; }
     internal bool CapacityWarningWritten { get; set; }
     internal List<PendingPlayerEvent> PendingEvents { get; } = [];
   }
@@ -409,34 +363,4 @@ internal static class TeleportManager
     internal string[] Args { get; } = args;
   }
 
-  internal sealed class TeleportNetworkState(long peer)
-  {
-    internal readonly long Peer = peer;
-    internal readonly List<PlayerNetworkSnapshot> Players = [];
-  }
-
-  internal readonly struct PlayerNetworkSnapshot
-  {
-    internal readonly ZDOID Id;
-    private readonly bool Exists;
-    private readonly Vector3 Position;
-    private readonly uint DataRevision;
-    private readonly uint OwnerRevision;
-    private readonly long Owner;
-
-    internal PlayerNetworkSnapshot(ZDOID id, ZDO? zdo)
-    {
-      Id = id;
-      Exists = zdo != null;
-      Position = zdo?.m_position ?? Vector3.zero;
-      DataRevision = zdo?.DataRevision ?? 0;
-      OwnerRevision = zdo?.OwnerRevision ?? 0;
-      Owner = zdo?.GetOwner() ?? 0;
-    }
-
-    internal bool Equals(PlayerNetworkSnapshot other) =>
-      Exists == other.Exists && Position == other.Position &&
-      DataRevision == other.DataRevision && OwnerRevision == other.OwnerRevision &&
-      Owner == other.Owner;
-  }
 }

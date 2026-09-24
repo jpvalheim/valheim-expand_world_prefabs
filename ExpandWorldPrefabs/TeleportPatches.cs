@@ -14,21 +14,3 @@ internal static class ServerTeleportRouteObserver
     TeleportManager.TrackRouted(rpcData);
   }
 }
-
-/// <summary>
-/// Observes fresh owner ZDO updates. The native packet is never changed,
-/// suppressed, or replayed.
-/// </summary>
-[HarmonyPatch(typeof(ZDOMan), "RPC_ZDOData")]
-internal static class PlayerZdoSyncObserver
-{
-  private static void Prefix(ZRpc rpc, out TeleportManager.TeleportNetworkState? __state)
-  {
-    __state = TeleportManager.CaptureNetwork(rpc);
-  }
-
-  private static void Postfix(TeleportManager.TeleportNetworkState? __state)
-  {
-    TeleportManager.CompleteNetwork(__state);
-  }
-}

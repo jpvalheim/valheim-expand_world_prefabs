@@ -30,10 +30,6 @@ internal static class TeleportChecks
       UnityEngine.Vector3.zero, 64f, 1, true), "minimum simulation boundary was excluded");
     Check(!TeleportManager.IsInsideActiveArea(new UnityEngine.Vector3(64.01f, 0f, 0f),
       UnityEngine.Vector3.zero, 64f, 1, true), "position outside minimum simulation area was accepted");
-    Check(!TeleportManager.IsOwnerSyncBarrierSafe(false, UnityEngine.Vector3.zero,
-      UnityEngine.Vector3.zero), "owner-sync barrier released without a fresh owner update");
-    Check(TeleportManager.IsOwnerSyncBarrierSafe(true, UnityEngine.Vector3.zero,
-      UnityEngine.Vector3.zero), "ordinary synchronized callback remained deferred");
     Check(!TeleportManager.HasTeleportMovement(UnityEngine.Vector3.zero,
       new UnityEngine.Vector3(32f, 0f, 0f), UnityEngine.Vector3.zero),
       "safe local movement was classified as a teleport");
@@ -47,5 +43,19 @@ internal static class TeleportChecks
       "an ordinary immediate RPC was unnecessarily delayed");
     Check(!DelayedRpc.ShouldExecuteImmediately(0f, "ordinary".GetStableHashCode(), true),
       "a quarantined immediate RPC was allowed to write during teleport");
+    Check(!TeleportManager.ShouldTrackRemotePlayerTeleport(true, false),
+      "singleplayer Player teleport created a remote synchronization watch");
+    Check(TeleportManager.ShouldTrackRemotePlayerTeleport(true, true),
+      "connected remote Player teleport did not create a synchronization watch");
+    Check(!TeleportManager.ShouldTrackRemotePlayerTeleport(false, true),
+      "non-Player teleport created a Player synchronization watch");
+    Check(!TeleportManager.ShouldDeferResetCloth(false),
+      "ordinary resetcloth created a teleport synchronization watch");
+    Check(TeleportManager.ShouldDeferResetCloth(true),
+      "resetcloth during a confirmed unsafe teleport was not deferred");
+    Check(TeleportManager.CoalesceResetClothCallbacks(false, 0) == 0,
+      "first resetcloth callback was counted as a duplicate");
+    Check(TeleportManager.CoalesceResetClothCallbacks(true, 0) == 1,
+      "second resetcloth callback was not coalesced");
   }
 }
